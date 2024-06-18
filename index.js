@@ -47,10 +47,19 @@ async function answerQuiz(url, answers, answerValues) {
         "&a="
       )}`
     );
+
+    const filteredOptions = data.quiz_selected_options
+      .filter((val) => val.is_matched)
+      .map((val) => val.value);
+
+    const exceptedOptions = data.quiz_selected_options
+      .filter((val) => !val.is_matched)
+      .map((val) => val.value);
+
     console.log(
       `"${answers.join(", ")}"~"${answerValues.join(", ")}"~${
         data.response.total_num_results
-      }`
+      }~${filteredOptions.join(", ")}~${exceptedOptions.join(", ")}`
     );
     return;
   }
@@ -104,5 +113,9 @@ async function answerQuiz(url, answers, answerValues) {
     await answerQuiz(`${url}&a=true`, [...answers, "true"]);
   }
 }
+
+console.log(
+  `Answers~Selected options~Total results~Applied options~Excluded Options`
+);
 
 answerQuiz(`${BASE_URL}/v1/quizzes/${QUIZ_ID}/next?key=${AC_KEY}`, [], []);
