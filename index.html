@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>🏴‍☠️ Quiz Script Executor 🏴‍☠️</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+      }
+      #progressContainer {
+        margin-top: 20px;
+        font-size: 24px;
+      }
+      .success {
+        color: green;
+      }
+      .failure {
+        color: red;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🏴‍☠️ Quiz Script Executor 🏴‍☠️</h1>
+    <form id="quizForm">
+      <label for="quizId">QUIZ_ID:</label>
+      <input type="text" id="quizId" name="quizId" required /><br /><br />
+      <label for="acKey">AC_KEY:</label>
+      <input type="text" id="acKey" name="acKey" required /><br /><br />
+      <button type="submit">Execute</button>
+    </form>
+    <button id="stopButton" style="display: none; margin-top: 20px">
+      Stop and Download CSV
+    </button>
+    <div id="progressContainer"></div>
+    <a id="downloadLink" style="display: none; margin-top: 20px"
+      >Download CSV</a
+    >
+
+    <script>
+      let stopRequested = false;
+      let controller = null;
+      const maxSuccessRequests = Infinity;
+      let successfulRequests = 0;
+
+      document
+        .getElementById("quizForm")
+        .addEventListener("submit", async function (event) {
+          event.preventDefault();
+          stopRequested = false;
+          controller = new AbortController();
+
+          const QUIZ_ID = document.getElementById("quizId").value;
+          const AC_KEY = document.getElementById("acKey").value;
+          const BASE_URL = "http://localhost:3000";
+          const REQUEST_DELAY = 10;
+          const progressContainer =
+            document.getElementById("progressContainer");
+          const csvContent = [];
+          let totalSteps = 0;
+
+          function addProgressSquare(status) {
+            if (stopRequested) return; // Prevent adding squares after stop is requested
+
+            const square = document.createElement("span");
+            if (status === "success") {
+              square.textContent = "🟩";
+              square.classList.add("success");
+            } else if (status === "zero") {
+              square.textContent = "🟥";
+              square.classList.add("failure");
+            } else if (status === "failure") {
+              square.textContent = "🟥";
+              square.classList.add("failure");
+            }
+            progressContainer.appendChild(square);
+          }
+
+          function countSteps(data) {
+            let count = 0;
+            if (data.next_question === null) {
+              return 1;
+            }
+            if (data.next_question.type === "single") {
+              count += data.next_question.options.length;
+            }
+            if (data.next_question.type === "multiple") {
+              count += data.next_question.options.length;
+            }
+            if (
+              data.next_question.type === "cover" ||
+              data.next_question.type === "open"
+            ) {
+              count += 1;
+            }
+            return count;
+          }
+
+          async function answerQuiz(url, answers, answerValues) {
+            if (stopRequested || successfulRequests >= maxSuccessRequests) {
+              return;
+            }
+
+            try {
+              const response = await fetch(url, { signal: controller.signal });
+              const data = await response.json();
+              totalSteps += countSteps(data);
+              if (data.next_question === null) {
+                // End of path
+                await new Promise((resolve) =>
+                  setTimeout(resolve, REQUEST_DELAY)
+                );
+                const resultResponse = await fetch(
+                  `${BASE_URL}/v1/quizzes/${QUIZ_ID}/results?key=${AC_KEY}&a=${answers.join(
+                    "&a="
+                  )}`,
+                  { signal: controller.signal }
+                );
+                const resultData = await resultResponse.json();
+                csvContent.push({
+                  answers: `"${answers.join(", ")}"`,
+                  answerValues: `"${answerValues.join(", ")}"`,
+                  totalResults: resultData.response.total_num_results,
+                });
+                if (resultData.response.total_num_results === 1) {
+                  addProgressSquare("zero");
+                } else {
+                  addProgressSquare("success");
+                }
+                successfulRequests++;
+                return;
+              }
+
+              if (data.next_question.type === "cover") {
+                await answerQuiz(
+                  `${url}&a=seen`,
+                  [...answers, "seen"],
+                  [...answerValues, "seen"]
+                );
+              }
+              if (data.next_question.type === "single") {
+                const options = data.next_question.options.map(
+                  (option) => option.id
+                );
+                for (const optionId of options) {
+                  await answerQuiz(
+                    `${url}&a=${optionId}`,
+                    [...answers, `${optionId}`],
+                    [
+                      ...answerValues,
+                      data.next_question.options.find(
+                        (option) => option.id === optionId
+                      ).value,
+                    ]
+                  );
+                }
+              }
+              if (data.next_question.type === "multiple") {
+                const options = data.next_question.options.map(
+                  (option) => option.id
+                );
+                let combinations = [];
+
+                combinations = options.map((option) => [option]);
+
+                for (const combination of combinations) {
+                  await answerQuiz(
+                    `${url}&a=${combination.join(",")}`,
+                    [...answers, combination.join(",")],
+                    [
+                      ...answerValues,
+                      combination
+                        .map(
+                          (optionId) =>
+                            data.next_question.options.find(
+                              (option) => option.id === optionId
+                            ).value
+                        )
+                        .join("|"),
+                    ]
+                  );
+                }
+              }
+              if (data.next_question.type === "open") {
+                await answerQuiz(
+                  `${url}&a=true`,
+                  [...answers, "true"],
+                  answerValues
+                );
+              }
+              addProgressSquare("success");
+              successfulRequests++;
+            } catch (error) {
+              if (controller.signal.aborted) {
+                console.log("Request was aborted");
+              } else {
+                console.error("Error occurred:", error);
+                addProgressSquare("failure");
+              }
+            }
+          }
+
+          await answerQuiz(
+            `${BASE_URL}/v1/quizzes/${QUIZ_ID}/next?key=${AC_KEY}`,
+            [],
+            []
+          );
+
+          generateAndDownloadCSV(csvContent);
+        });
+
+      document
+        .getElementById("stopButton")
+        .addEventListener("click", function () {
+          stopRequested = true;
+          if (controller) {
+            controller.abort();
+          }
+          generateAndDownloadCSV([]);
+        });
+
+      window.addEventListener("beforeunload", function () {
+        stopRequested = true;
+        if (controller) {
+          controller.abort();
+        }
+      });
+
+      function generateAndDownloadCSV(csvContent) {
+        // Sort the csvContent by total_num_results
+        csvContent.sort((a, b) => b.totalResults - a.totalResults);
+
+        // Generate CSV file
+        const csvString = csvContent
+          .map(
+            (row) => `${row.answers}~${row.answerValues}~${row.totalResults}`
+          )
+          .join("\n");
+        const blob = new Blob([csvString], { type: "text/csv" });
+        const url = URL.createObjectURL(blob);
+
+        const downloadLink = document.getElementById("downloadLink");
+        downloadLink.href = url;
+        downloadLink.download = "log.csv";
+        downloadLink.style.display = "block";
+        downloadLink.innerText = "Download CSV";
+      }
+
+      document
+        .getElementById("quizForm")
+        .addEventListener("submit", function () {
+          document.getElementById("stopButton").style.display = "block";
+        });
+    </script>
+  </body>
+</html>
